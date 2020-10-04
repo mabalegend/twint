@@ -1,4 +1,4 @@
-import datetime
+import datetime, time
 from sys import platform
 import logging as logme
 
@@ -68,17 +68,20 @@ async def Profile(username, init):
     return url
 
 async def Search(config, init):
-    logme.debug(__name__+':Search')
-    url = f"{base}/search/timeline"
+    logme.debug(__name__ + ':Search')
+    url = "https://mobile.twitter.com/search"
     q = ""
     params = [
         ('vertical', 'default'),
         ('src', 'unkn'),
         ('include_available_features', '1'),
         ('include_entities', '1'),
-        ('max_position', str(init)),
+        #('max_position', str(init)),
         ('reset_error_state', 'false'),
+        ('prefetchTimestamp', str(int(time.time() * 1000)))
     ]
+    if init != '-1':
+        url += init
     if not config.Popular_tweets:
         params.append(('f', 'tweets'))
     if config.Lang:
@@ -144,3 +147,15 @@ async def Search(config, init):
     params.append(("q", q))
     _serialQuery = _sanitizeQuery(url, params)
     return url, params, _serialQuery
+
+async def Thread(urlz, init):
+    # logme.debug(__name__+':Profile')
+    # url = f"{base}/profiles/show/{username}/timeline/tweets?include_"
+    # url += "available_features=1&lang=en&include_entities=1"
+    # url += "&include_new_items_bar=true"
+
+    # if init != '-1':
+    #     url += f"&max_position={init}"
+    url = 'https://mobile.twitter.com' + urlz
+
+    return url

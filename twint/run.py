@@ -1,10 +1,15 @@
-import sys, os, time
+import sys, os, time, datetime
 from asyncio import get_event_loop, TimeoutError, ensure_future, new_event_loop, set_event_loop
 
 from . import datelock, feed, get, output, verbose, storage
 from .storage import db
 
 import logging as logme
+
+from bs4 import BeautifulSoup
+from re import findall
+
+import time
 
 class Twint:
     def __init__(self, config):
@@ -16,6 +21,7 @@ class Twint:
             self.init = '-1'
 
         self.feed = [-1]
+        self.speci = [-1]
         self.count = 0
         self.user_agent = ""
         self.config = config
@@ -49,7 +55,18 @@ class Twint:
             self.feed = []
             try:
                 if self.config.Favorites:
-                    self.feed, self.init = feed.Mobile(response)
+                    self.feed, self.init = feed.MobileFav(response)
+                    favorite_err_cnt = 0
+                    if len(self.feed) == 0 and len(self.init) == 0:
+                        while ((len(self.feed) == 0 or len(self.init) == 0) and favorite_err_cnt < 5):
+                            self.user_agent = await get.RandomUserAgent(wa=False)
+                            response = await get.RequestUrl(self.config, self.init,
+                                                            headers=[("User-Agent", self.user_agent)])
+                            self.feed, self.init = feed.MobileFav(response)
+                            favorite_err_cnt += 1
+                            time.sleep(1)
+                        if favorite_err_cnt == 5:
+                            print("Favorite page could not be fetched")
                     if not self.count % 40:
                         time.sleep(5)
                 elif self.config.Followers or self.config.Following:
@@ -62,7 +79,7 @@ class Twint:
                     else:
                         self.feed, self.init = feed.profile(response)
                 elif self.config.TwitterSearch:
-                    self.feed, self.init = feed.Json(response)
+                    self.feed, self.init, self.speci = feed.MobileSearch(response)
                 break
             except TimeoutError as e:
                 if self.config.Proxy_host.lower() == "tor":
@@ -120,7 +137,51 @@ class Twint:
     async def favorite(self):
         logme.debug(__name__+':Twint:favorite')
         await self.Feed()
-        self.count += await get.Multi(self.feed, self.config, self.conn)
+        favorited_tweets_list = []
+        for tweet in self.feed:
+            tweet_dict = {}
+            self.count += 1
+            try:
+                tweet_dict['data-item-id'] = tweet.find("div", {"class": "tweet-text"})['data-id']
+                t_url = tweet.find("span", {"class": "metadata"}).find("a")["href"]
+                tweet_dict['data-conversation-id'] = t_url.split('?')[0].split('/')[-1]
+                tweet_dict['username'] = tweet.find("div", {"class": "username"}).text.replace('\n', '').replace(' ',
+                                                                                                                 '')
+                tweet_dict['tweet'] = tweet.find("div", {"class": "tweet-text"}).find("div", {"class": "dir-ltr"}).text
+                date_str = tweet.find("td", {"class": "timestamp"}).find("a").text
+                # test_dates = ["1m", "2h", "Jun 21, 2019", "Mar 12", "28 Jun 19"]
+                # date_str = test_dates[3]
+                if len(date_str) <= 3 and (date_str[-1] == "m" or date_str[-1] == "h"):  # 25m 1h
+                    dateu = str(datetime.date.today())
+                    tweet_dict['date'] = dateu
+                elif ',' in date_str:  # Aug 21, 2019
+                    sp = date_str.replace(',', '').split(' ')
+                    date_str_formatted = sp[1] + ' ' + sp[0] + ' ' + sp[2]
+                    dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+                    tweet_dict['date'] = dateu
+                elif len(date_str.split(' ')) == 3:  # 28 Jun 19
+                    sp = date_str.split(' ')
+                    if len(sp[2]) == 2:
+                        sp[2] = '20' + sp[2]
+                    date_str_formatted = sp[0] + ' ' + sp[1] + ' ' + sp[2]
+                    dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+                    tweet_dict['date'] = dateu
+                else:  # Aug 21
+                    sp = date_str.split(' ')
+                    date_str_formatted = sp[1] + ' ' + sp[0] + ' ' + str(datetime.date.today().year)
+                    dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+                    tweet_dict['date'] = dateu
+
+                favorited_tweets_list.append(tweet_dict)
+
+            except Exception as e:
+                logme.critical(__name__ + ':Twint:favorite:favorite_field_lack')
+                print("shit: ", date_str, " ", str(e))
+
+        try:
+            self.config.favorited_tweets_list += favorited_tweets_list
+        except AttributeError:
+            self.config.favorited_tweets_list = favorited_tweets_list
 
     async def profile(self):
         await self.Feed()
@@ -135,14 +196,172 @@ class Twint:
 
     async def tweets(self):
         await self.Feed()
-        if self.config.Location:
-            logme.debug(__name__+':Twint:tweets:location')
-            self.count += await get.Multi(self.feed, self.config, self.conn)
-        else:
-            logme.debug(__name__+':Twint:tweets:notLocation')
-            for tweet in self.feed:
-                self.count += 1
-                await output.Tweets(tweet, self.config, self.conn)
+        search_tweet_list = [] #speci
+        search_tweet_lists = [] #ori
+
+        tweets = self.speci.find_all("table", "tweet")
+
+        for tweet in tweets:
+            tweet_dict = {}
+            toreturn = {}
+            self.count += 1
+            tweet_context_handle = tweet.find('div', class_='tweet-reply-context')
+
+            if tweet_context_handle != None:
+                full_url = tweet['href']
+
+                # call every URL here by using full_url
+                response = await get.RequestUrl(self.config, self.init, headers=[("User-Agent", self.user_agent)], damz = True, damzurl = full_url)
+                time.sleep(3)
+                soup = BeautifulSoup(response, "html.parser")
+                inreplytos = soup.find('div', class_='inreplytos')
+
+                username_replied = tweet_context_handle.find_all("a")
+                tweets_replied = inreplytos.find_all("table", "tweet")
+                tweets_replier = soup.find('div', {"id": "main-content"})
+
+                # toreturn['parent_tweets'] = tweets_replied
+                tweet_replied_dict = {}
+                tweet_replier_dict = {}
+
+                if not tweets_replied:
+                    continue
+                else:
+                    tweets_replied = tweets_replied[-1]
+                    
+                    try:
+                        tweet_replied_dict['data-item-id'] = tweets_replied.find("div", {"class": "tweet-text"})['data-id']
+                        t_url = tweets_replied.find("span", {"class": "metadata"}).find("a")["href"]
+                        tweet_replied_dict['data-conversation-id'] = t_url.split('?')[0].split('/')[-1]
+                        tweet_replied_dict['username'] = tweets_replied.find("div", {"class": "username"}).text.replace('\n', '').replace(' ',
+                                                                                                                        '')
+                        tweet_replied_dict['tweet'] = tweets_replied.find("div", {"class": "tweet-text"}).find("div", {"class": "dir-ltr"}).text
+                        date_str = tweets_replied.find("td", {"class": "timestamp"}).find("a").text
+
+                        tweet_replied_dict["avatar"] = tweets_replied.find("td", {"class": "avatar"}).find("img")["src"]
+
+                        if len(date_str) <= 3 and (date_str[-1] == "m" or date_str[-1] == "h"):  # 25m 1h
+                            dateu = str(datetime.date.today())
+                            tweet_replied_dict['date'] = dateu
+                        elif ',' in date_str:  # Aug 21, 2019
+                            sp = date_str.replace(',', '').split(' ')
+                            date_str_formatted = sp[1] + ' ' + sp[0] + ' ' + sp[2]
+                            dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+                            tweet_replied_dict['date'] = dateu
+                        elif len(date_str.split(' ')) == 3:  # 28 Jun 19
+                            sp = date_str.split(' ')
+                            if len(sp[2]) == 2:
+                                sp[2] = '20' + sp[2]
+                            date_str_formatted = sp[0] + ' ' + sp[1] + ' ' + sp[2]
+                            dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+                            tweet_replied_dict['date'] = dateu
+                        else:  # Aug 21
+                            sp = date_str.split(' ')
+                            date_str_formatted = sp[1] + ' ' + sp[0] + ' ' + str(datetime.date.today().year)
+                            dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+                            tweet_replied_dict['date'] = dateu
+                    except Exception as e:
+                        logme.critical(__name__ + ':Twint:favorite:search_field_lack' + str(e))
+
+                if not tweets_replier:
+                    continue
+                else:
+                    
+                    try:
+                        tweet_replier_dict['data-item-id'] = tweet.find("div", {"class": "tweet-text"})['data-id']
+                        t_url = tweet.find("span", {"class": "metadata"}).find("a")["href"]
+                        tweet_replier_dict['data-conversation-id'] = t_url.split('?')[0].split('/')[-1]
+                        tweet_replier_dict['username'] = tweet.find("div", {"class": "username"}).text.replace('\n', '').replace(' ',
+                                                                                                                        '')
+                        tweet_replier_dict['tweet'] = tweet.find("div", {"class": "tweet-text"}).find("div", {"class": "dir-ltr"}).text
+                        date_str = tweet.find("td", {"class": "timestamp"}).find("a").text
+
+                        tweet_replier_dict["avatar"] = tweet.find("td", {"class": "avatar"}).find("img")["src"]
+
+                        if len(date_str) <= 3 and (date_str[-1] == "m" or date_str[-1] == "h"):  # 25m 1h
+                            dateu = str(datetime.date.today())
+                            tweet_replier_dict['date'] = dateu
+                        elif ',' in date_str:  # Aug 21, 2019
+                            sp = date_str.replace(',', '').split(' ')
+                            date_str_formatted = sp[1] + ' ' + sp[0] + ' ' + sp[2]
+                            dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+                            tweet_replier_dict['date'] = dateu
+                        elif len(date_str.split(' ')) == 3:  # 28 Jun 19
+                            sp = date_str.split(' ')
+                            if len(sp[2]) == 2:
+                                sp[2] = '20' + sp[2]
+                            date_str_formatted = sp[0] + ' ' + sp[1] + ' ' + sp[2]
+                            dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+                            tweet_replier_dict['date'] = dateu
+                        else:  # Aug 21
+                            sp = date_str.split(' ')
+                            date_str_formatted = sp[1] + ' ' + sp[0] + ' ' + str(datetime.date.today().year)
+                            dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+                            tweet_replier_dict['date'] = dateu
+                    except Exception as e:
+                        logme.critical(__name__ + ':Twint:favorite:search_field_lack' + str(e))
+
+
+
+                toreturn['parent_tweets'] = tweet_replied_dict
+                toreturn['reply'] = tweet_replier_dict
+                toreturn['parent_usernames'] = username_replied
+
+                search_tweet_list.append(toreturn)
+
+            # try:
+            #     search_tweet_list.append(tweet.find_all("table", "tweet"))
+
+            # except Exception as e:
+            #     logme.critical(__name__ + ':Twint:favorite:search_field_lack')
+            #     # print("shit: ", date_str, " ", str(e))
+
+        # for tweet in self.feed:
+        #     tweet_dict = {}
+        #     self.count += 1
+        #     try:
+        #         # tweet_dict['data-item-id'] = tweet.find("div", {"class": "tweet-text"})['data-id']
+        #         # t_url = tweet.find("span", {"class": "metadata"}).find("a")["href"]
+        #         # tweet_dict['data-conversation-id'] = t_url.split('?')[0].split('/')[-1]
+        #         # tweet_dict['username'] = tweet.find("div", {"class": "username"}).text.replace('\n', '').replace(' ',
+        #         #                                                                                                  '')
+        #         # tweet_dict['tweet'] = tweet.find("div", {"class": "tweet-text"}).find("div", {"class": "dir-ltr"}).text
+        #         # date_str = tweet.find("td", {"class": "timestamp"}).find("a").text
+
+        #         # tweet_dict["avatar"] = tweet.find("td", {"class": "avatar"}).find("img")["src"]
+
+        #         # if len(date_str) <= 3 and (date_str[-1] == "m" or date_str[-1] == "h"):  # 25m 1h
+        #         #     dateu = str(datetime.date.today())
+        #         #     tweet_dict['date'] = dateu
+        #         # elif ',' in date_str:  # Aug 21, 2019
+        #         #     sp = date_str.replace(',', '').split(' ')
+        #         #     date_str_formatted = sp[1] + ' ' + sp[0] + ' ' + sp[2]
+        #         #     dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+        #         #     tweet_dict['date'] = dateu
+        #         # elif len(date_str.split(' ')) == 3:  # 28 Jun 19
+        #         #     sp = date_str.split(' ')
+        #         #     if len(sp[2]) == 2:
+        #         #         sp[2] = '20' + sp[2]
+        #         #     date_str_formatted = sp[0] + ' ' + sp[1] + ' ' + sp[2]
+        #         #     dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+        #         #     tweet_dict['date'] = dateu
+        #         # else:  # Aug 21
+        #         #     sp = date_str.split(' ')
+        #         #     date_str_formatted = sp[1] + ' ' + sp[0] + ' ' + str(datetime.date.today().year)
+        #         #     dateu = datetime.datetime.strptime(date_str_formatted, "%d %b %Y").strftime("%Y-%m-%d")
+        #         #     tweet_dict['date'] = dateu
+
+        #         # search_tweet_list.append(tweet_dict)
+        #         search_tweet_lists.append(tweet)
+
+        #     except Exception as e:
+        #         logme.critical(__name__ + ':Twint:favorite:search_field_lack')
+        #         print("shit: ", date_str, " ", str(e))
+
+        try:
+            self.config.search_tweet_list += search_tweet_list
+        except AttributeError:
+            self.config.search_tweet_list = search_tweet_list
 
     async def main(self, callback=None):
 
@@ -159,11 +378,11 @@ class Twint:
         else:
             self.user_agent = await get.RandomUserAgent()
 
-        if self.config.User_id is not None:
+        if self.config.User_id is not None and self.config.Username is None:
             logme.debug(__name__+':Twint:main:user_id')
             self.config.Username = await get.Username(self.config.User_id)
 
-        if self.config.Username is not None:
+        if self.config.Username is not None and self.config.User_id is None:
             logme.debug(__name__+':Twint:main:username')
             url = f"https://twitter.com/{self.config.Username}?lang=en"
             self.config.User_id = await get.User(url, self.config, self.conn, True)
@@ -293,7 +512,7 @@ def Lookup(config):
             logme.debug(__name__+':Twint:Lookup:user_id')
             config.Username = get_event_loop().run_until_complete(get.Username(config.User_id))
 
-        url = f"https://twitter.com/{config.Username}?lang=en"
+        url = f"https://mobile.twitter.com/{config.Username}?prefetchTimestamp=" + str(int(time.time() * 1000))
         get_event_loop().run_until_complete(get.User(url, config, db.Conn(config.Database)))
 
         if config.Pandas_au:

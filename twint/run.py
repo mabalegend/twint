@@ -24,6 +24,7 @@ class Twint:
         self.speci = [-1]
         self.iteration = 1
         self.count = 0
+        self.ids = set()
         self.user_agent = ""
         self.config = config
         self.conn = db.Conn(config.Database)
@@ -208,7 +209,7 @@ class Twint:
             self.count += 1
             tweet_context_handle = tweet.find('div', class_='tweet-reply-context')
 
-            if tweet_context_handle != None:
+            if tweet_context_handle != None and tweet.find("div", {"class": "tweet-text"})['data-id'] not in self.ids:
                 full_url = tweet['href']
 
                 # call every URL here by using full_url
@@ -313,6 +314,8 @@ class Twint:
                 toreturn['parent_tweets'] = tweet_replied_dict
                 toreturn['reply'] = tweet_replier_dict
                 toreturn['parent_usernames'] = username_replied
+
+                self.ids.add(tweet_replier_dict['data-item-id'])
 
                 search_tweet_list.append(toreturn)
 

@@ -201,7 +201,7 @@ class Twint:
         search_tweet_lists = [] #ori
 
         tweets = self.speci.find_all("table", "tweet")
-
+        itr = 1
         for tweet in tweets:
             tweet_dict = {}
             toreturn = {}
@@ -214,8 +214,9 @@ class Twint:
                 # call every URL here by using full_url
                 response = await get.RequestUrl(self.config, self.init, headers=[("User-Agent", self.user_agent)], damz = True, damzurl = full_url)
 #                 time.sleep(1)
-                print('iteration '+str(self.iteration))
-                self.iteration += 1
+                print('iteration '+str(itr))
+                print('count '+str(self.count))
+                itr += 1
                 soup = BeautifulSoup(response, "html.parser")
                 inreplytos = soup.find('div', class_='inreplytos')
 

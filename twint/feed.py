@@ -28,6 +28,18 @@ def Mobile(response):
 
     return tweets, max_id
 
+def MobileFav(response):
+
+    soup = BeautifulSoup(response, "html.parser")
+    tweets = soup.find_all("table", "tweet")
+    max_id = soup.find_all("div", "w-button-more")
+    try:
+        max_id = findall(r'max_id=(.*?)">', str(max_id))[0]
+    except Exception as e:
+        print(str(e) + " [x] feed.MobileFav")
+
+    return tweets, max_id
+
 def profile(response):
     logme.debug(__name__+':profile')
     json_response = loads(response)
@@ -44,3 +56,13 @@ def Json(response):
     soup = BeautifulSoup(html, "html.parser")
     feed = soup.find_all("div", "tweet")
     return feed, json_response["min_position"]
+
+def MobileSearch(response):
+
+    logme.debug(__name__ + ':MobileSearch')
+    soup = BeautifulSoup(response, "html.parser")
+    tweets = soup.find_all("table", "tweet")
+    specy = soup
+    max_id = str(soup.find_all("div", "w-button-more")[0]).split('''href="/search''')[1].split('>')[0]
+
+    return tweets, max_id, specy

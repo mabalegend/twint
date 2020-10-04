@@ -9,7 +9,7 @@ import asyncio
 import concurrent.futures
 import random
 from json import loads
-from aiohttp_socks import SocksConnector, SocksVer
+from aiohttp_socks import ProxyConnector, ProxyType
 
 from . import url
 from .output import Tweets, Users
@@ -20,16 +20,16 @@ import logging as logme
 httpproxy = None
 
 user_agent_list = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.90 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 5.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.90 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.90 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/57.0.2987.133 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/57.0.2987.133 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36',
+    #'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36',
+    #'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.90 Safari/537.36',
+    #'Mozilla/5.0 (Windows NT 5.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.90 Safari/537.36',
+    #'Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.90 Safari/537.36',
+    #'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.157 Safari/537.36',
+    #'Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36',
+    #'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/57.0.2987.133 Safari/537.36',
+    #'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/57.0.2987.133 Safari/537.36',
+    #'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36',
+    #'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36',
     'Mozilla/4.0 (compatible; MSIE 9.0; Windows NT 6.1)',
     'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko',
     'Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0)',
@@ -50,16 +50,15 @@ def get_connector(config):
     _connector = None
     if config.Proxy_host:
         if config.Proxy_host.lower() == "tor":
-            _connector = SocksConnector(
-                socks_ver=SocksVer.SOCKS5,
+            _connector = ProxyConnector(
                 host='127.0.0.1',
                 port=9050,
                 rdns=True)
         elif config.Proxy_port and config.Proxy_type:
             if config.Proxy_type.lower() == "socks5":
-                _type = SocksVer.SOCKS5
+                _type = ProxyType.SOCKS5
             elif config.Proxy_type.lower() == "socks4":
-                _type = SocksVer.SOCKS4
+                _type = ProxyType.SOCKS4
             elif config.Proxy_type.lower() == "http":
                 global httpproxy
                 httpproxy = "http://" + config.Proxy_host + ":" + str(config.Proxy_port)
@@ -68,8 +67,8 @@ def get_connector(config):
                 logme.critical("get_connector:proxy-type-error")
                 print("Error: Proxy types allowed are: http, socks5 and socks4. No https.")
                 sys.exit(1)
-            _connector = SocksConnector(
-                socks_ver=_type,
+            _connector = ProxyConnector(
+                proxy_type=_type,
                 host=config.Proxy_host,
                 port=config.Proxy_port,
                 rdns=True)
@@ -86,40 +85,48 @@ def get_connector(config):
     return _connector
 
 
-async def RequestUrl(config, init, headers = []):
+async def RequestUrl(config, init, headers = [], damz = False, damzurl = ''):
     logme.debug(__name__+':RequestUrl')
     _connector = get_connector(config)
     _serialQuery = ""
     params = []
     _url = ""
 
-    if config.Profile:
-        if config.Profile_full:
-            logme.debug(__name__+':RequestUrl:Profile_full')
-            _url = await url.MobileProfile(config.Username, init)
-        else:
-            logme.debug(__name__+':RequestUrl:notProfile_full')
-            _url = await url.Profile(config.Username, init)
-        _serialQuery = _url
-    elif config.TwitterSearch:
-        logme.debug(__name__+':RequestUrl:TwitterSearch')
-        _url, params, _serialQuery = await url.Search(config, init)
+    if damz:
+        _url = await url.Thread(damzurl, init)
+        headers = {"X-Requested-With": "XMLHttpRequest"}
+        response = await Request(_url, params=params, connector=_connector, headers=headers)
+        # response = _url
     else:
-        if config.Following:
-            logme.debug(__name__+':RequestUrl:Following')
-            _url = await url.Following(config.Username, init)
-        elif config.Followers:
-            logme.debug(__name__+':RequestUrl:Followers')
-            _url = await url.Followers(config.Username, init)
+
+        if config.Profile:
+            if config.Profile_full:
+                logme.debug(__name__+':RequestUrl:Profile_full')
+                _url = await url.MobileProfile(config.Username, init)
+            else:
+                logme.debug(__name__+':RequestUrl:notProfile_full')
+                _url = await url.Profile(config.Username, init)
+            _serialQuery = _url
+        elif config.TwitterSearch:
+            logme.debug(__name__+':RequestUrl:TwitterSearch')
+            _url, params, _serialQuery = await url.Search(config, init)
+            headers = {"X-Requested-With": "XMLHttpRequest"}
         else:
-            logme.debug(__name__+':RequestUrl:Favorites')
-            _url = await url.Favorites(config.Username, init)
-        _serialQuery = _url
+            if config.Following:
+                logme.debug(__name__+':RequestUrl:Following')
+                _url = await url.Following(config.Username, init)
+            elif config.Followers:
+                logme.debug(__name__+':RequestUrl:Followers')
+                _url = await url.Followers(config.Username, init)
+            else:
+                logme.debug(__name__+':RequestUrl:Favorites')
+                _url = await url.Favorites(config.Username, init)
+            _serialQuery = _url
 
-    response = await Request(_url, params=params, connector=_connector, headers=headers)
+        response = await Request(_url, params=params, connector=_connector, headers=headers)
 
-    if config.Debug:
-        print(_serialQuery, file=open("twint-request_urls.log", "a", encoding="utf-8"))
+        if config.Debug:
+            print(_serialQuery, file=open("twint-request_urls.log", "a", encoding="utf-8"))
 
     return response
 
